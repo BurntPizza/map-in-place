@@ -44,7 +44,6 @@ impl<A, B> MapInPlace<A, B> for Vec<A> {
 
         match a_size.cmp(&b_size) {
             Ordering::Equal => {
-                // map_loop!();
                 self.as_mut_slice().map_in_place(f);
 
                 unsafe { mem::transmute(self) }
@@ -60,7 +59,15 @@ impl<A, B> MapInPlace<A, B> for Vec<A> {
 
                     v
                 } else {
-                    let cap = self.capacity().checked_mul(a_size).map(|x| x / b_size).unwrap();
+                    // nA * bytes/A = nbytes
+                    // nbytes / bytes/B = nbytes * B/bytes = nB
+                    // (assuming bytes/B divides evenly into nbytes)
+                    let cap = {
+                        let tmp = self.capacity().checked_mul(a_size).unwrap();
+                        // TODO: don't require the divisibility constraint
+                        assert_eq!(tmp % b_size, 0);
+                        tmp / b_size
+                    };
                     let ptr_a = self.as_ptr();
                     let ptr_b = ptr_a as *mut B;
                     let len = self.len();
