@@ -74,8 +74,8 @@ impl<A, B> MapInPlace<A, B> for Vec<A> {
                     let len = self.len();
 
                     unsafe {
-                        map_in_place(ptr_a, ptr_b, len, f);
                         mem::forget(self);
+                        map_in_place(ptr_a, ptr_b, len, f);
                         Vec::from_raw_parts(ptr_b, len, cap)
                     }
                 }
