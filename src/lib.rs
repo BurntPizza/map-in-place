@@ -107,7 +107,65 @@ impl<'a, A, B: 'a> MapInPlace<A, B> for &'a mut [A] {
 #[cfg(test)]
 mod tests {
 
+
+
     use super::MapInPlace;
+
+    use std::mem;
+    use std::sync::Mutex;
+
+    #[test]
+    fn vec_elements_drop() {
+        lazy_static! {
+            static ref DROPS: Mutex<Vec<String>> = Mutex::new(vec![]);
+        }
+
+        #[derive(Debug, PartialEq, Clone)]
+        struct X(usize);
+
+        impl Drop for X {
+            fn drop(&mut self) {
+                DROPS.lock().unwrap().push(format!("X({})", self.0));
+            }
+        }
+
+        #[derive(Debug, PartialEq, Clone)]
+        struct Y(usize);
+
+        impl Drop for Y {
+            fn drop(&mut self) {
+                DROPS.lock().unwrap().push(format!("Y({})", self.0));
+            }
+        }
+
+        assert_eq!(mem::size_of::<X>(), mem::size_of::<Y>()); // will use slice impl
+
+        let v = vec![X(0), X(1), X(2), X(3)];
+
+        let bp = v.as_ptr() as *const ();
+        let v = v.map_in_place(|X(v)| Y(v));
+
+        {
+            let drops = DROPS.lock().unwrap().clone();
+            assert_eq!(drops, vec!["X(0)", "X(1)", "X(2)", "X(3)"]);
+        }
+
+        let ap = v.as_ptr() as *const ();
+        let expected = vec![Y(0), Y(1), Y(2), Y(3)];
+
+        assert_eq!(bp, ap); // still at same memory addr
+        assert_eq!(v, expected);
+
+        mem::drop(v);
+
+        {
+            let drops = DROPS.lock().unwrap().clone();
+            assert_eq!(drops,
+                       vec!["X(0)", "X(1)", "X(2)", "X(3)", "Y(0)", "Y(1)", "Y(2)", "Y(3)"]);
+        }
+
+        mem::drop(expected);
+    }
 
     #[test]
     fn same_size_vec() {
