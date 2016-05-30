@@ -21,6 +21,7 @@ pub trait MapInPlace<A, B>: Sized {
     fn map_in_place<F>(self, f: F) -> Self::Output where F: FnMut(A) -> B;
 }
 
+#[inline]
 unsafe fn map_in_place<A, B, F>(ptr_a: *const A, ptr_b: *mut B, len: usize, mut f: F)
     where F: FnMut(A) -> B
 {
