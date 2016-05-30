@@ -16,7 +16,8 @@ pub trait MapInPlace<A, B>: Sized {
 impl<A, B> MapInPlace<A, B> for Vec<A> {
     type Output = Vec<B>;
 
-    fn map_in_place<F>(self, mut f: F) -> Self::Output
+    #[inline]
+    fn map_in_place<F>(mut self, mut f: F) -> Self::Output
         where F: FnMut(A) -> B
     {
         use std::mem;
@@ -47,7 +48,8 @@ impl<A, B> MapInPlace<A, B> for Vec<A> {
 
         match a_size.cmp(&b_size) {
             Ordering::Equal => {
-                map_loop!();
+                // map_loop!();
+                self.as_mut_slice().map_in_place(f);
 
                 unsafe { mem::transmute(self) }
             }
@@ -75,13 +77,49 @@ impl<A, B> MapInPlace<A, B> for Vec<A> {
     }
 }
 
+impl<'a, A, B: 'a> MapInPlace<A, B> for &'a mut [A] {
+    type Output = &'a mut [B];
+
+    #[inline]
+    fn map_in_place<F>(self, mut f: F) -> Self::Output
+        where F: FnMut(A) -> B
+    {
+        use std::mem;
+        use std::ptr;
+        use std::cmp::{Ord, Ordering};
+
+        let a_size = mem::size_of::<A>();
+        let b_size = mem::size_of::<B>();
+
+        match a_size.cmp(&b_size) {
+            Ordering::Equal => {
+                let ptr_a = self.as_ptr();
+                let ptr_b = ptr_a as *mut B;
+
+                for i in 0..self.len() {
+                    unsafe {
+                        let ptr_a = ptr_a.offset(i as isize);
+                        let ptr_b = ptr_b.offset(i as isize);
+
+                        ptr::write(ptr_b, f(ptr::read(ptr_a)));
+                    }
+                }
+
+                unsafe { mem::transmute(self) }
+            }
+            Ordering::Greater => panic!(),
+            Ordering::Less => panic!(),
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
 
     use super::MapInPlace;
 
     #[test]
-    fn same_size() {
+    fn same_size_vec() {
         let v = vec![0, 1, 2, 3];
 
         let bp = v.as_ptr() as *const ();
@@ -93,7 +131,7 @@ mod tests {
     }
 
     #[test]
-    fn different_sizes() {
+    fn different_sizes_vec() {
         let v = vec![0, 1, 2, 3];
 
         let bp = v.as_ptr() as *const ();
@@ -105,7 +143,7 @@ mod tests {
     }
 
     #[test]
-    fn both_zst() {
+    fn both_zst_vec() {
         #[derive(Debug)]
         struct Zst;
 
@@ -119,7 +157,7 @@ mod tests {
     }
 
     #[test]
-    fn nzst_to_zst() {
+    fn nzst_to_zst_vec() {
         let v = vec![0, 1, 2, 3];
 
         let bp = v.as_ptr() as *const ();
@@ -131,11 +169,76 @@ mod tests {
 
     #[test]
     #[should_panic]
-    fn zst_to_nzst() {
+    fn zst_to_nzst_vec() {
         let v = vec![(), (), (), ()];
 
         let bp = v.as_ptr() as *const ();
         let v = v.map_in_place(|_| 0usize);
+        let ap = v.as_ptr() as *const ();
+
+        assert_eq!(bp, ap); // still at same memory addr
+    }
+
+    // //////
+
+    #[test]
+    fn same_size_slice() {
+        let mut v = vec![0, 1, 2, 3];
+
+        let bp = v.as_ptr() as *const ();
+        let v = (&mut *v).map_in_place(|x: u32| (x * x) as i32);
+        let ap = v.as_ptr() as *const ();
+
+        assert_eq!(bp, ap); // still at same memory addr
+        assert_eq!(v, &*vec![0, 1, 4, 9]);
+    }
+
+    #[test]
+    #[should_panic]
+    fn different_sizes_slice() {
+        let mut v = vec![0, 1, 2, 3];
+
+        let bp = v.as_ptr() as *const ();
+        let v = (&mut *v).map_in_place(|x: u32| (x * x) as i16);
+        let ap = v.as_ptr() as *const ();
+
+        assert_eq!(bp, ap); // still at same memory addr
+        assert_eq!(v, &*vec![0, 1, 4, 9]);
+    }
+
+    #[test]
+    fn both_zst_slice() {
+        #[derive(Debug)]
+        struct Zst;
+
+        let mut v = vec![(), (), (), ()];
+
+        let bp = v.as_ptr() as *const ();
+        let v = (&mut *v).map_in_place(|_| Zst);
+        let ap = v.as_ptr() as *const ();
+
+        assert_eq!(bp, ap); // still at same memory addr
+    }
+
+    #[test]
+    #[should_panic]
+    fn nzst_to_zst_slice() {
+        let mut v = vec![0, 1, 2, 3];
+
+        let bp = v.as_ptr() as *const ();
+        let v = (&mut *v).map_in_place(|_: u32| ());
+        let ap = v.as_ptr() as *const ();
+
+        assert!(bp != ap); // -- NOT -- still at same memory addr
+    }
+
+    #[test]
+    #[should_panic]
+    fn zst_to_nzst_slice() {
+        let mut v = vec![(), (), (), ()];
+
+        let bp = v.as_ptr() as *const ();
+        let v = (&mut *v).map_in_place(|_| 0usize);
         let ap = v.as_ptr() as *const ();
 
         assert_eq!(bp, ap); // still at same memory addr
