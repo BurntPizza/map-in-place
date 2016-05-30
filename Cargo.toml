@@ -1,0 +1,6 @@
+[package]
+name = "map_in_place"
+version = "0.1.0"
+authors = ["BurntPizza <xburntpizza@gmail.com>"]
+
+[dependencies]
