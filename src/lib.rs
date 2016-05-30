@@ -1,6 +1,15 @@
 
-trait MapInPlace<A, B>: Sized {
+pub trait MapInPlace<A, B>: Sized {
+    /// Should be of the same base type as the implementor.  
+    /// E.g. `Vec<B>` when implementing for `Vec<A>`
     type Output;
+
+    /// Apply a mapping function to `self` without allocating. 
+    /// Makes best effort to maintain the invariant  
+    ///  
+    /// `self.as_ptr() as *const () == self.map_in_place(..).as_ptr() as *const ()`  
+    ///  
+    /// An example of a case where this isn't possible is for Vec where B is zero-sized but A is not.
     fn map_in_place<F>(self, f: F) -> Self::Output where F: FnMut(A) -> B;
 }
 
