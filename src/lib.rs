@@ -6,7 +6,6 @@ extern crate lazy_static;
 use std::marker::PhantomData;
 use std::ptr;
 use std::mem;
-use std::cmp::{Ord, Ordering};
 
 pub trait MapInPlace<A, B>: Sized {
     /// Should be of the same base type as the implementor.  
@@ -22,13 +21,73 @@ pub trait MapInPlace<A, B>: Sized {
     fn map_in_place<F>(self, f: F) -> Self::Output where F: FnMut(A) -> B;
 }
 
-struct Dropper<A, B> {
+impl<A, B> MapInPlace<A, B> for Vec<A> {
+    type Output = Vec<B>;
+
+    #[inline]
+    fn map_in_place<F>(self, mut f: F) -> Self::Output
+        where F: FnMut(A) -> B
+    {
+        let a_size = mem::size_of::<A>();
+        let b_size = mem::size_of::<B>();
+        let ptr_a = self.as_ptr();
+        let ptr_b = ptr_a as *mut B;
+        let len = self.len();
+
+        if b_size == 0 {
+            // doesn't preserve address invariant if a_size != 0
+            let mut v = Vec::with_capacity(0);
+
+            for e in self.into_iter() {
+                v.push(f(e));
+            }
+
+            v
+        } else {
+            let cap = if a_size == b_size {
+                self.capacity()
+            } else if a_size > b_size {
+                // nA * bytes/A = nbytes
+                // nbytes / bytes/B = nbytes * B/bytes = nB
+                // (assuming bytes/B divides evenly into nbytes)
+                let n_bytes = self.capacity().checked_mul(a_size).unwrap();
+                // TODO: don't require the divisibility constraint
+                assert_eq!(n_bytes % b_size, 0);
+                n_bytes / b_size
+            } else {
+                panic!("map_in_place(Vec<A>): Size of A must be greater than or equal to size of B")
+            };
+
+            let mut dropper = VecDropper {
+                idx: 0,
+                owned: self,
+                _marker: PhantomData::<B>,
+            };
+
+            unsafe {
+                for i in 0..len {
+                    let ptr_a = ptr_a.offset(i as isize);
+                    let ptr_b = ptr_b.offset(i as isize);
+
+                    let v = ptr::read(ptr_a);
+                    dropper.idx += 1;
+
+                    ptr::write(ptr_b, f(v));
+                }
+
+                Vec::from_raw_parts(ptr_b, len, cap)
+            }
+        }
+    }
+}
+
+struct VecDropper<A, B> {
     idx: usize,
     owned: Vec<A>,
     _marker: PhantomData<B>,
 }
 
-impl<A, B> Drop for Dropper<A, B> {
+impl<A, B> Drop for VecDropper<A, B> {
     #[inline]
     fn drop(&mut self) {
         let owned = &mut self.owned;
@@ -52,95 +111,6 @@ impl<A, B> Drop for Dropper<A, B> {
             } else {
                 // everything went well, no cleanup required
                 mem::forget(mem::replace(owned, Vec::with_capacity(0)));
-            }
-        }
-    }
-}
-
-#[inline]
-unsafe fn map_in_place<A, B, F>(owned: Vec<A>, mut f: F)
-    where F: FnMut(A) -> B
-{
-    let ptr_a = owned.as_ptr();
-    let ptr_b = ptr_a as *mut B;
-    let len = owned.len();
-
-    let mut dropper = Dropper {
-        idx: 0,
-        owned: owned,
-        _marker: PhantomData::<B>,
-    };
-
-    for i in 0..len {
-        let ptr_a = ptr_a.offset(i as isize);
-        let ptr_b = ptr_b.offset(i as isize);
-
-        let v = ptr::read(ptr_a);
-        dropper.idx += 1;
-
-        ptr::write(ptr_b, f(v));
-    }
-}
-
-impl<A, B> MapInPlace<A, B> for Vec<A> {
-    type Output = Vec<B>;
-
-    #[inline]
-    fn map_in_place<F>(self, mut f: F) -> Self::Output
-        where F: FnMut(A) -> B
-    {
-        let a_size = mem::size_of::<A>();
-        let b_size = mem::size_of::<B>();
-        let ptr_a = self.as_ptr();
-        let ptr_b = ptr_a as *mut B;
-        let len = self.len();
-
-        match a_size.cmp(&b_size) {
-            Ordering::Equal => {
-                let cap = self.capacity();
-
-                unsafe {
-                    if a_size == 0 {
-                        for _ in 0..len {
-                            f(ptr::read(ptr_a));
-                        }
-
-                        mem::transmute(self)
-                    } else {
-                        map_in_place(self, f);
-                        Vec::from_raw_parts(ptr_b, len, cap)
-                    }
-                }
-            }
-            Ordering::Greater => {
-                if b_size == 0 {
-                    // doesn't preserve address invariant
-                    let mut v = Vec::with_capacity(0);
-
-                    for e in self.into_iter() {
-                        v.push(f(e));
-                    }
-
-                    v
-                } else {
-                    // nA * bytes/A = nbytes
-                    // nbytes / bytes/B = nbytes * B/bytes = nB
-                    // (assuming bytes/B divides evenly into nbytes)
-                    let cap = {
-                        let tmp = self.capacity().checked_mul(a_size).unwrap();
-                        // TODO: don't require the divisibility constraint
-                        assert_eq!(tmp % b_size, 0);
-                        tmp / b_size
-                    };
-
-                    unsafe {
-                        map_in_place(self, f);
-                        Vec::from_raw_parts(ptr_b, len, cap)
-                    }
-                }
-            }
-            Ordering::Less => {
-                panic!("map_in_place(Vec<A>): Size of A must be greater than or equal to size of B")
             }
         }
     }
