@@ -101,7 +101,7 @@ impl<A, B> Drop for VecDropper<A, B> {
 
             if idx != len {
                 // panicked; manual cleanup needed
-                for i in 0..idx {
+                for i in 0..(idx - 1) {
                     ptr::drop_in_place(ptr_b.offset(i as isize));
                 }
 
@@ -115,6 +115,8 @@ impl<A, B> Drop for VecDropper<A, B> {
         }
     }
 }
+
+// TODO: more tests (panicking with different size cfgs), more impls
 
 #[cfg(test)]
 mod tests {
@@ -177,63 +179,66 @@ mod tests {
         mem::drop(expected);
     }
 
-
-    #[test]
-    fn vec_panic_drop() {
-        lazy_static! {
-            static ref DROPS: Mutex<Vec<String>> = Mutex::new(vec![]);
-        }
-
-        #[derive(Debug, PartialEq, Clone)]
-        struct X(usize);
-
-        impl Drop for X {
-            fn drop(&mut self) {
-                DROPS.lock().unwrap().push(format!("X({})", self.0));
-            }
-        }
-
-        #[derive(Debug, PartialEq, Clone)]
-        struct Y(usize);
-
-        impl Drop for Y {
-            fn drop(&mut self) {
-                DROPS.lock().unwrap().push(format!("Y({})", self.0));
-            }
-        }
-
-        assert_eq!(mem::size_of::<X>(), mem::size_of::<Y>());
-
-        let v = vec![X(0), X(1), X(2), X(3), X(4)];
-
-        match catch_unwind(|| {
-            v.map_in_place(|X(v)| {
-                if v == 2 {
-                    panic!();
+    macro_rules! vec_panic_drop_test {
+        ($name:ident, $ytype:ty) => {
+            #[test]
+            fn $name() {
+                lazy_static! {
+                    static ref DROPS: Mutex<Vec<String>> = Mutex::new(vec![]);
                 }
-                Y(v)
-            })
-        }) {
-            Ok(_) => unreachable!(),
-            Err(_) => {
-                let drops = DROPS.lock().unwrap().clone();
-                assert_eq!(drops,
-                           vec![// consume Xs
-                                "X(0)",
-                                "X(1)",
-                                "X(2)",
-                                // panic here
-                                // drop generated Ys
-                                "Y(0)",
-                                "Y(1)",
-                                "Y(2)",
-                                // drop remaining unprocessed Xs
-                                "X(3)",
-                                "X(4)"]);
+                
+                #[derive(Debug, PartialEq, Clone)]
+                struct X(char);
+                
+                impl Drop for X {
+                    fn drop(&mut self) {
+                        DROPS.lock().unwrap().push(format!("X({})", self.0));
+                    }
+                }
+                
+                #[derive(Debug, PartialEq, Clone)]
+                struct Y($ytype);
+                
+                impl Drop for Y {
+                    fn drop(&mut self) {
+                        DROPS.lock().unwrap().push(format!("Y({})", self.0));
+                    }
+                }
+                
+                let v = vec![X('a'), X('b'), X('c'), X('d'), X('e')];
+                
+                match catch_unwind(|| {
+                    v.map_in_place(|X(v)| {
+                        if v == 'c' {
+                            panic!();
+                        } else {
+                            Y(v as $ytype)
+                        }
+                    })
+                }) {
+                    Ok(_) => unreachable!(),
+                    Err(_) => {
+                        let drops = DROPS.lock().unwrap().clone();
+                        assert_eq!(drops,
+                                   vec![// consume Xs
+                                       "X(a)",
+                                       "X(b)",
+                                       "X(c)",
+                                       // panic here
+                                       // drop generated Ys
+                                       "Y(97)",
+                                       "Y(98)",
+                                       // drop remaining unprocessed Xs
+                                       "X(d)",
+                                       "X(e)"]);
+                    }
+                }
             }
         }
     }
 
+    vec_panic_drop_test!(vec_same_size_panic_drop, u32);
+    vec_panic_drop_test!(vec_diff_size_panic_drop, u16);
 
     #[test]
     fn same_size_vec() {
