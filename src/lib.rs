@@ -51,10 +51,7 @@ impl<A, B> Drop for Dropper<A, B> {
                 }
             } else {
                 // everything went well, no cleanup required
-
-                let mut tmp = Vec::with_capacity(0);
-                mem::swap(&mut tmp, owned);
-                mem::forget(tmp);
+                mem::forget(mem::replace(owned, Vec::with_capacity(0)));
             }
         }
     }
@@ -155,6 +152,7 @@ mod tests {
 
     use std::mem;
     use std::sync::Mutex;
+    use std::panic::catch_unwind;
 
     #[test]
     fn vec_elements_drop() {
@@ -180,9 +178,9 @@ mod tests {
             }
         }
 
-    assert_eq!(mem::size_of::<X>(), mem::size_of::<Y>()); // will use slice impl
+        assert_eq!(mem::size_of::<X>(), mem::size_of::<Y>());
 
-    let v = vec![X(0), X(1), X(2), X(3)];
+        let v = vec![X(0), X(1), X(2), X(3)];
 
         let bp = v.as_ptr() as *const ();
         let v = v.map_in_place(|X(v)| Y(v));
@@ -198,7 +196,7 @@ mod tests {
         assert_eq!(bp, ap); // still at same memory addr
         assert_eq!(v, expected);
 
-    mem::drop(v);
+        mem::drop(v);
 
         {
             let drops = DROPS.lock().unwrap().clone();
@@ -208,6 +206,64 @@ mod tests {
 
         mem::drop(expected);
     }
+
+
+    #[test]
+    fn vec_panic_drop() {
+        lazy_static! {
+            static ref DROPS: Mutex<Vec<String>> = Mutex::new(vec![]);
+        }
+
+        #[derive(Debug, PartialEq, Clone)]
+        struct X(usize);
+
+        impl Drop for X {
+            fn drop(&mut self) {
+                DROPS.lock().unwrap().push(format!("X({})", self.0));
+            }
+        }
+
+        #[derive(Debug, PartialEq, Clone)]
+        struct Y(usize);
+
+        impl Drop for Y {
+            fn drop(&mut self) {
+                DROPS.lock().unwrap().push(format!("Y({})", self.0));
+            }
+        }
+
+        assert_eq!(mem::size_of::<X>(), mem::size_of::<Y>());
+
+        let v = vec![X(0), X(1), X(2), X(3), X(4)];
+
+        match catch_unwind(|| {
+            v.map_in_place(|X(v)| {
+                if v == 2 {
+                    panic!();
+                }
+                Y(v)
+            })
+        }) {
+            Ok(_) => unreachable!(),
+            Err(_) => {
+                let drops = DROPS.lock().unwrap().clone();
+                assert_eq!(drops,
+                           vec![// consume Xs
+                                "X(0)",
+                                "X(1)",
+                                "X(2)",
+                                // panic here
+                                // drop generated Ys
+                                "Y(0)",
+                                "Y(1)",
+                                "Y(2)",
+                                // drop remaining unprocessed Xs
+                                "X(3)",
+                                "X(4)"]);
+            }
+        }
+    }
+
 
     #[test]
     fn same_size_vec() {
@@ -238,7 +294,7 @@ mod tests {
         #[derive(Debug)]
         struct Zst;
 
-    let v = vec![(), (), (), ()];
+        let v = vec![(), (), (), ()];
 
         let bp = v.as_ptr() as *const ();
         let v = v.map_in_place(|_| Zst);
