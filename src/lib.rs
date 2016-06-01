@@ -21,6 +21,25 @@ pub trait MapInPlace<A, B>: Sized {
     fn map_in_place<F>(self, f: F) -> Self::Output where F: FnMut(A) -> B;
 }
 
+impl<A, B> MapInPlace<A, B> for Box<A> {
+    type Output = Box<B>;
+
+    #[inline]
+    fn map_in_place<F>(self, mut f: F) -> Self::Output
+        where F: FnMut(A) -> B
+    {
+        let ptr = Box::into_raw(self);
+
+        unsafe {
+            let result = f(ptr::read(ptr));
+            let ptr = ptr as *mut B;
+
+            ptr::write(ptr, result);
+            Box::from_raw(ptr)
+        }
+    }
+}
+
 impl<A, B> MapInPlace<A, B> for Vec<A> {
     type Output = Vec<B>;
 
@@ -116,8 +135,6 @@ impl<A, B> Drop for VecDropper<A, B> {
     }
 }
 
-// TODO: more tests (panicking with different size cfgs), more impls
-
 #[cfg(test)]
 mod tests {
     use super::MapInPlace;
@@ -125,6 +142,110 @@ mod tests {
     use std::mem;
     use std::sync::Mutex;
     use std::panic::catch_unwind;
+
+    macro_rules! box_drop_test {
+        ($name:ident, $xtype:ty, $ytype:ty) => {
+            #[test]
+            fn $name() {
+                lazy_static! {
+                    static ref DROPS: Mutex<Vec<String>> = Mutex::new(vec![]);
+                }
+                
+                #[derive(Debug, PartialEq, Clone)]
+                struct X($xtype);
+                
+                impl Drop for X {
+                    fn drop(&mut self) {
+                        DROPS.lock().unwrap().push(format!("X({})", self.0));
+                    }
+                }
+                
+                #[derive(Debug, PartialEq, Clone)]
+                struct Y($ytype);
+                
+                impl Drop for Y {
+                    fn drop(&mut self) {
+                        DROPS.lock().unwrap().push(format!("Y({})", self.0));
+                    }
+                }
+                
+                let b = Box::new(X(7));
+                
+                let bp = Box::into_raw(b);
+                let b = unsafe { Box::from_raw(bp) };
+                let bp = bp as *const ();
+                
+                let b = b.map_in_place(|X(v)| Y(v as $ytype));
+                
+                {
+                    let drops = DROPS.lock().unwrap().clone();
+                    assert_eq!(drops, vec!["X(7)"]);
+                }
+                
+                let ap = Box::into_raw(b);
+                let b = unsafe { Box::from_raw(ap) };
+                let ap = ap as *const ();
+                
+                assert_eq!(bp, ap);
+                
+                mem::drop(b);
+                
+                {
+                    let drops = DROPS.lock().unwrap().clone();
+                    assert_eq!(drops, vec!["X(7)", "Y(7)"]);
+                }
+            }
+        }
+    }
+
+    macro_rules! box_panic_drop_test {
+        ($name:ident, $xtype:ty, $ytype:ty) => {
+            #[test]
+            fn $name() {
+                lazy_static! {
+                    static ref DROPS: Mutex<Vec<String>> = Mutex::new(vec![]);
+                }
+                
+                #[derive(Debug, PartialEq, Clone)]
+                struct X($xtype);
+                
+                impl Drop for X {
+                    fn drop(&mut self) {
+                        DROPS.lock().unwrap().push(format!("X({})", self.0));
+                    }
+                }
+                
+                #[derive(Debug, PartialEq, Clone)]
+                struct Y($ytype);
+                
+                impl Drop for Y {
+                    fn drop(&mut self) {
+                        DROPS.lock().unwrap().push(format!("Y({})", self.0));
+                    }
+                }
+                
+                let b = Box::new(X(7));
+                
+                let bp = Box::into_raw(b);
+                let b = unsafe { Box::from_raw(bp) };
+                
+                match catch_unwind(|| b.map_in_place(|X(_)| {
+                    panic!();
+                })) {
+                    Ok(_) => unreachable!(),
+                    Err(_) => {
+                        let drops = DROPS.lock().unwrap().clone();
+                        assert_eq!(drops, vec!["X(7)"]);
+                    }
+                }
+            }
+        }
+    }
+
+    box_drop_test!(box_drop_same_sizes, u64, i64);
+    box_drop_test!(box_drop_diff_sizes, u64, i32);
+    box_panic_drop_test!(box_panic_drop_same_sizes, u64, i64);
+    box_panic_drop_test!(box_panic_drop_diff_sizes, u64, i32);
 
     #[test]
     fn vec_elements_drop() {
